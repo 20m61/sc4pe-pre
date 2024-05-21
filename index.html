@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>全画面Canvasアプリ</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100%;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #waveformCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+        }
+
+        .slider-container input {
+            margin-left: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="controls">
+        <label>
+            <input type="checkbox" id="toggleWaveTypeLeft">
+            左手音色切り替え (Sine/Square)
+        </label>
+        <label>
+            <input type="checkbox" id="toggleWaveTypeRight">
+            右手音色切り替え (Sine/Square)
+        </label>
+        <label>
+            <input type="checkbox" id="toggleHiragana">
+            ひらがなの読み上げ オン/オフ
+        </label>
+        <div class="slider-container">
+            <label for="pitchSlider">ピッチ調整</label>
+            <input type="range" id="pitchSlider" min="0.5" max="2" step="0.1" value="1">
+        </div>
+    </div>
+    <canvas id="waveformCanvas"></canvas>
+    <video id="video" autoplay style="display: none;"></video>
+    <script src="https://cdn.jsdelivr.net/npm/handtrackjs@0.0.13/dist/handtrack.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        const video = document.getElementById('video');
+        const toggleWaveTypeLeft = document.getElementById('toggleWaveTypeLeft');
+        const toggleWaveTypeRight = document.getElementById('toggleWaveTypeRight');
+        const toggleHiragana = document.getElementById('toggleHiragana');
+        const pitchSlider = document.getElementById('pitchSlider');
+        const waveformCanvas = document.getElementById('waveformCanvas');
+        const waveformCtx = waveformCanvas.getContext('2d');
+
+        let counter = 0;
+        const interval = 10; // 10回に1回読み上げ
+
+        // Three.jsの設定
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // ホワイトノイズの砂嵐テクスチャ生成
+        function generateNoise() {
+            const size = window.innerWidth * window.innerHeight;
+            const data = new Uint8Array(4 * size);
+            for (let i = 0; i < size; i++) {
+                const val = Math.random() * 255;
+                data[i * 4] = val;
+                data[i * 4 + 1] = val;
+                data[i * 4 + 2] = val;
+                data[i * 4 + 3] = 255;
+            }
+            return data;
+        }
+
+        const noiseTexture = new THREE.DataTexture(generateNoise(), window.innerWidth, window.innerHeight, THREE.RGBAFormat);
+        noiseTexture.magFilter = THREE.NearestFilter;
+        noiseTexture.minFilter = THREE.NearestFilter;
+        noiseTexture.needsUpdate = true;
+
+        const noiseMaterial = new THREE.MeshBasicMaterial({ map: noiseTexture });
+        const noiseGeometry = new THREE.PlaneGeometry(2, 2);
+        const noiseMesh = new THREE.Mesh(noiseGeometry, noiseMaterial);
+        scene.add(noiseMesh);
+
+        // ビデオテクスチャの作成
+        const videoTexture = new THREE.VideoTexture(video);
+        const videoMaterial = new THREE.MeshBasicMaterial({ map: videoTexture });
+        const videoGeometry = new THREE.PlaneGeometry(4, 3);
+        const videoMesh = new THREE.Mesh(videoGeometry, videoMaterial);
+        videoMesh.position.z = -1;
+        scene.add(videoMesh);
+
+        // 3Dキューブの作成
+        const cubeGeometry = new THREE.BoxGeometry();
+        const cubeMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+        const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+        cube.position.set(0, 0, 1);
+        scene.add(cube);
+
+        camera.position.z = 5;
+
+        function animateScene() {
+            requestAnimationFrame(animateScene);
+
+            // ホワイトノイズの更新
+            noiseTexture.image.data = generateNoise();
+            noiseTexture.needsUpdate = true;
+
+            renderer.render(scene, camera);
+        }
+
+        animateScene();
+
+        // リサイズハンドラ
+        function resizeRenderer() {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            waveformCanvas.width = window.innerWidth;
+            waveformCanvas.height = window.innerHeight;
+        }
+
+        window.addEventListener('resize', resizeRenderer);
+        resizeRenderer();
+
+        // サンプル音
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+        // 左手用のオシレーターとゲインノード
+        const oscillatorLeft = audioContext.createOscillator();
+        const gainNodeLeft = audioContext.createGain();
+        oscillatorLeft.type = 'sine'; // 初期音色
+        oscillatorLeft.frequency.setValueAtTime(440, audioContext.currentTime); // 初期周波数
+        oscillatorLeft.connect(gainNodeLeft).connect(audioContext.destination);
+        oscillatorLeft.start();
+
+        // 右手用のオシレーターとゲインノード
+        const oscillatorRight = audioContext.createOscillator();
+        const gainNodeRight = audioContext.createGain();
+        oscillatorRight.type = 'sine'; // 初期音色
+        oscillatorRight.frequency.setValueAtTime(440, audioContext.currentTime); // 初期周波数
+        oscillatorRight.connect(gainNodeRight).connect(audioContext.destination);
+        oscillatorRight.start();
+
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        gainNodeLeft.connect(analyser);
+        gainNodeRight.connect(analyser);
+
+        const bufferLength = analyser.fftSize;
+        const dataArray = new Uint8Array(bufferLength);
+
+        // 波形描画
+        function drawWaveform() {
+            requestAnimationFrame(drawWaveform);
+
+            analyser.getByteTimeDomainData(dataArray);
+
+            waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+
+            waveformCtx.lineWidth = 2;
+            waveformCtx.strokeStyle = 'white';
+            waveformCtx.beginPath();
+
+            const sliceWidth = waveformCanvas.width * 1.0 / bufferLength;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                const v = dataArray[i] / 128.0;
+                const y = v * waveformCanvas.height / 2;
+
+                if (i === 0) {
+                    waveformCtx.moveTo(x, y);
+                } else {
+                    waveformCtx.lineTo(x, y);
+                }
+
+                x += sliceWidth;
+            }
+
+            waveformCtx.lineTo(waveformCanvas.width, waveformCanvas.height / 2);
+            waveformCtx.stroke();
+        }
+
+        drawWaveform();
+
+        // HandTrack.jsを使用したハンドジェスチャー認識の設定
+        const modelParams = {
+            flipHorizontal: true,   // ウェブカメラの映像を左右反転
+            maxNumBoxes: 2,         // 認識する手の数
+            iouThreshold: 0.5,      // 重なりの閾値
+            scoreThreshold: 0.6,    // 信頼度の閾値
+        };
+
+        handTrack.load(modelParams).then(model => {
+            handTrack.startVideo(video).then(status => {
+                if (status) {
+                    console.log("ビデオ開始");
+                    runDetection(model);
+                } else {
+                    console.log("ビデオが許可されていません");
+                }
+            });
+        });
+
+        const hiraganaMap = [
+            'あ', 'い', 'う', 'え', 'お',
+            'か', 'き', 'く', 'け', 'こ',
+            'さ', 'し', 'す', 'せ', 'そ',
+            'た', 'ち', 'つ', 'て', 'と',
+            'な', 'に', 'ぬ', 'ね', 'の',
+            'は', 'ひ', 'ふ', 'へ', 'ほ',
+            'ま', 'み', 'む', 'め', 'も',
+            'や', 'ゆ', 'よ',
+            'ら', 'り', 'る', 'れ', 'ろ',
+            'わ', 'を', 'ん'
+        ];
+
+        function frequencyToHiragana(frequency) {
+            const index = Math.floor((frequency - 5) / 1995 * hiraganaMap.length);
+            return hiraganaMap[Math.min(index, hiraganaMap.length - 1)];
+        }
+
+        function speakHiragana(text, pitch) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'ja-JP';
+            utterance.pitch = pitch; // ピッチを設定
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function runDetection(model) {
+            model.detect(video).then(predictions => {
+                if (predictions.length > 0) {
+                    console.log(predictions);
+                    // 左手と右手の判定
+                    const leftHand = predictions[0];
+                    const rightHand = predictions[1];
+
+                    const pitch = parseFloat(pitchSlider.value); // ピッチを取得
+
+                    if (leftHand) {
+                        const hand = leftHand.bbox;
+                        const x = hand[0] + hand[2] / 2;
+                        const y = hand[1] + hand[3] / 2;
+
+                        // x座標で左手の周波数、y座標でボリュームをコントロール
+                        const frequency = 5 + (x / window.innerWidth) * 1995; // 5 Hz から 2000 Hz
+                        const volume = Math.pow(1 - (y / window.innerHeight), 3); // ボリュームをさらに劇的に変化
+
+                        oscillatorLeft.frequency.setValueAtTime(frequency, audioContext.currentTime);
+                        gainNodeLeft.gain.setValueAtTime(volume, audioContext.currentTime);
+
+                        if (toggleHiragana.checked && counter % interval === 0) {
+                            const hiragana = frequencyToHiragana(frequency);
+                            speakHiragana(hiragana, pitch);
+                        }
+
+                        // キューブのサイズと色を変更
+                        cube.scale.set(1 + (x / window.innerWidth), 1 + (y / window.innerHeight), 1);
+                        cube.material.color.setRGB(x / window.innerWidth, y / window.innerHeight, 0.5);
+
+                        // キューブの回転を変更
+                        cube.rotation.x = y / window.innerHeight * Math.PI * 2;
+                        cube.rotation.y = x / window.innerWidth * Math.PI * 2;
+
+                        console.log(`左手の位置: x=${x}, y=${y}, 周波数=${frequency}Hz, ボリューム=${volume}`);
+                    }
+
+                    if (rightHand) {
+                        const hand = rightHand.bbox;
+                        const x = hand[0] + hand[2] / 2;
+                        const y = hand[1] + hand[3] / 2;
+
+                        // x座標で右手の周波数、y座標でボリュームをコントロール
+                        const frequency = 5 + (x / window.innerWidth) * 1995; // 5 Hz から 2000 Hz
+                        const volume = Math.pow(1 - (y / window.innerHeight), 3); // ボリュームをさらに劇的に変化
+
+                        oscillatorRight.frequency.setValueAtTime(frequency, audioContext.currentTime);
+                        gainNodeRight.gain.setValueAtTime(volume, audioContext.currentTime);
+
+                        if (toggleHiragana.checked && counter % interval === 0) {
+                            const hiragana = frequencyToHiragana(frequency);
+                            speakHiragana(hiragana, pitch);
+                        }
+
+                        // キューブのサイズと色を変更
+                        cube.scale.set(1 + (x / window.innerWidth), 1 + (y / window.innerHeight), 1);
+                        cube.material.color.setRGB(x / window.innerWidth, y / window.innerHeight, 0.5);
+
+                        // キューブの回転を変更
+                        cube.rotation.x = y / window.innerHeight * Math.PI * 2;
+                        cube.rotation.y = x / window.innerWidth * Math.PI * 2;
+
+                        console.log(`右手の位置: x=${x}, y=${y}, 周波数=${frequency}Hz, ボリューム=${volume}`);
+                    }
+                    counter++;
+                }
+                requestAnimationFrame(() => runDetection(model));
+            });
+        }
+
+        // トグルスイッチの変更に応じて音色を切り替える
+        toggleWaveTypeLeft.addEventListener('change', (event) => {
+            if (event.target.checked) {
+                oscillatorLeft.type = 'square';
+            } else {
+                oscillatorLeft.type = 'sine';
+            }
+        });
+
+        toggleWaveTypeRight.addEventListener('change', (event) => {
+            if (event.target.checked) {
+                oscillatorRight.type = 'square';
+            } else {
+                oscillatorRight.type = 'sine';
+            }
+        });
+    </script>
+</body>
+
+</html>
